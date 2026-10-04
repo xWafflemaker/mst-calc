@@ -170,8 +170,24 @@ PET_DROPS = {
     4: ("Silver Serpent Pet", 75_000),
 }
 
+TRACKED_DROPS = ("Ash", "T4 Keys", "T5 Keys")
+
 # ----------------------------------------------------------------------
-# 2. HELPERS
+# 2. THEME DETECTION
+# ----------------------------------------------------------------------
+def get_theme_base() -> str:
+    try:
+        return st.context.theme.type
+    except Exception:
+        pass
+    base = st.get_option("theme.base")
+    return base if base in ("light", "dark") else "light"
+
+
+THEME = get_theme_base()
+
+# ----------------------------------------------------------------------
+# 3. HELPERS
 # ----------------------------------------------------------------------
 def format_duration(seconds: float) -> str:
     """Render a duration in a human-readable unit."""
@@ -188,6 +204,17 @@ def format_duration(seconds: float) -> str:
     return f"{seconds / (86_400 * 365):.2f} y"
 
 
+def get_highlight_style() -> str:
+    if THEME == "dark":
+        bg, fg = "#4a3800", "#ffd700"
+    else:
+        bg, fg = "#fff3cd", "#664d03"
+    return f"background-color: {bg}; color: {fg}; font-weight: bold"
+
+
+# ----------------------------------------------------------------------
+# 4. CALCULATION FUNCTIONS
+# ----------------------------------------------------------------------
 def calc_damage(
     weapon_damage, bedrock_choice, t3_pct, tier, t5_pct, autumn
 ):
@@ -195,8 +222,8 @@ def calc_damage(
     Final damage:
         weapon * (1 + talisman_pct + t3_pct)          [percentage talismans]
         (weapon + 250) * (1 + t3_pct)                 [Bedrock Talisman I]
-        ... then * (1 + t5_pct) on T5 mobs
-        ... then * 1.5 during Autumn
+        then * (1 + t5_pct) on T5 mobs
+        then * 1.5 during Autumn
     """
     b_type, b_value = BEDROCK_TALISMANS[bedrock_choice]
     t3_bonus = t3_pct / 100
@@ -219,14 +246,30 @@ def calc_pet_effects(base_hp, pet_type, pet_level):
     if pet_level <= 0 or pet_type == "None":
         return base_hp, 1.0
 
-    bonus_fraction = pet_level / 400  # (level/4) percent
+    bonus_fraction = pet_level / 400
 
     if pet_type == "Serpent":
-        effective_hp = base_hp * (1 - bonus_fraction)
-        return effective_hp, 1.0
+        return base_hp * (1 - bonus_fraction), 1.0
     if pet_type == "Bone Dragon":
         return base_hp, 1 + bonus_fraction
     return base_hp, 1.0
+
+
+def effective_time_per_kill(
+    mob_data, tier, weapon_damage, bedrock_choice,
+    t3_pct, t5_pct, autumn, attack_speed, pet_type, pet_level
+):
+    """Return the time per kill (in seconds), accounting for pets."""
+    damage = calc_damage(
+        weapon_damage, bedrock_choice, t3_pct, tier, t5_pct, autumn
+    )
+    base_hp = mob_data["hp"]
+    effective_hp, kills_mult = calc_pet_effects(base_hp, pet_type, pet_level)
+
+    hits = math.ceil(effective_hp / damage)
+    time_per_fight = hits / attack_speed
+
+    return time_per_fight / kills_mult if kills_mult > 0 else 0
 
 
 def analyze_mob(
@@ -243,13 +286,8 @@ def analyze_mob(
     hits = math.ceil(effective_hp / damage)
     time_per_fight = hits / attack_speed
 
-    # Effective time per kill accounts for Bone Dragon's double-kill.
-    effective_time_per_kill = (
-        time_per_fight / kills_mult if kills_mult > 0 else 0
-    )
-    kills_per_hour = (
-        3600 / effective_time_per_kill if effective_time_per_kill > 0 else 0
-    )
+    effective_time = time_per_fight / kills_mult if kills_mult > 0 else 0
+    kills_per_hour = 3600 / effective_time if effective_time > 0 else 0
 
     rows = []
 
@@ -259,13 +297,13 @@ def analyze_mob(
             {
                 "Drop": "Ash",
                 "Rate": f"{ash_per_kill:,} / kill",
-                "Time per Drop": format_duration(effective_time_per_kill),
+                "Time per Drop": format_duration(effective_time),
                 "Drops in 100h": kills_per_hour * 100 * ash_per_kill,
             }
         )
 
     for drop_name, one_in_n in mob_data["drops"]:
-        time_per_drop = effective_time_per_kill * one_in_n
+        time_per_drop = effective_time * one_in_n
         drops_100h = kills_per_hour * 100 / one_in_n
         rows.append(
             {
@@ -282,9 +320,7 @@ def analyze_mob(
             {
                 "Drop": pet_drop_name,
                 "Rate": f"1 / {pet_odds:,}",
-                "Time per Drop": format_duration(
-                    effective_time_per_kill * pet_odds
-                ),
+                "Time per Drop": format_duration(effective_time * pet_odds),
                 "Drops in 100h": kills_per_hour * 100 / pet_odds,
             }
         )
@@ -292,9 +328,50 @@ def analyze_mob(
     return hits, kills_per_hour, damage, effective_hp, rows
 
 
+def find_best_mobs_for_tracked_drops(
+    weapon_damage, bedrock_choice, t3_pct, t5_pct, autumn,
+    attack_speed, pet_type, pet_level
+):
+    best_mob = {drop: None for drop in TRACKED_DROPS}
+    best_drops_100h = {drop: -1.0 for drop in TRACKED_DROPS}
+    best_rate_detail = {drop: "" for drop in TRACKED_DROPS}
+
+    for tier, mob_dict in ((3, T3_MOBS), (4, T4_MOBS), (5, T5_MOBS)):
+        for mob_name, mob_data in mob_dict.items():
+            t_kill = effective_time_per_kill(
+                mob_data, tier, weapon_damage, bedrock_choice,
+                t3_pct, t5_pct, autumn, attack_speed, pet_type, pet_level
+            )
+            kph = 3600 / t_kill if t_kill > 0 else 0
+
+            ash_per_kill = mob_data.get("ash", 0)
+            if ash_per_kill > 0:
+                drops_100h = kph * 100 * ash_per_kill
+                if drops_100h > best_drops_100h["Ash"]:
+                    best_drops_100h["Ash"] = drops_100h
+                    best_mob["Ash"] = mob_name
+                    best_rate_detail["Ash"] = (
+                        f"{ash_per_kill:,} ash / kill"
+                    )
+
+            for drop_name, one_in_n in mob_data["drops"]:
+                if drop_name in TRACKED_DROPS:
+                    drops_100h = kph * 100 / one_in_n
+                    if drops_100h > best_drops_100h[drop_name]:
+                        best_drops_100h[drop_name] = drops_100h
+                        best_mob[drop_name] = mob_name
+                        best_rate_detail[drop_name] = (
+                            f"1 / {one_in_n:,}  "
+                            f"({format_duration(t_kill * one_in_n)} / drop)"
+                        )
+
+    return best_mob, best_drops_100h, best_rate_detail
+
+
 def render_mob(
     mob_name, mob_data, tier, weapon_damage, bedrock_choice,
-    t3_pct, t5_pct, autumn, attack_speed, pet_type, pet_level
+    t3_pct, t5_pct, autumn, attack_speed, pet_type, pet_level,
+    best_mob_for_drop,
 ):
     hits, kph, damage, eff_hp, rows = analyze_mob(
         mob_data, tier, weapon_damage, bedrock_choice,
@@ -324,8 +401,22 @@ def render_mob(
 
     df = pd.DataFrame(rows)
 
+    highlighted = {
+        drop for drop in TRACKED_DROPS
+        if best_mob_for_drop.get(drop) == mob_name
+    }
+
+    style = get_highlight_style()
+
+    def style_row(row):
+        if row["Drop"] in highlighted:
+            return [style] * len(row)
+        return [""] * len(row)
+
+    styled_df = df.style.apply(style_row, axis=1)
+
     st.dataframe(
-        df,
+        styled_df,
         hide_index=True,
         use_container_width=True,
         column_config={
@@ -342,7 +433,7 @@ def render_mob(
 
 
 # ----------------------------------------------------------------------
-# 3. USER INPUTS
+# 5. USER INPUTS
 # ----------------------------------------------------------------------
 st.subheader("Your Setup")
 
@@ -367,8 +458,8 @@ with col1:
         help=(
             "How many times per second your weapon hits. The default (5) "
             "may not match your setup — run an in-game test (e.g. time how "
-            "long it takes to kill a low-HP mob) to find your true rate "
-            "for accurate results."
+            "long it takes to kill a low-HP mob averaged over 10k kills) "
+            "to find your true rate for accurate results."
         ),
     )
 with col2:
@@ -408,7 +499,6 @@ t5_choice = st.selectbox(
 )
 t5_pct = int(t5_choice.rstrip("%"))
 
-# --- Pet selection ---
 st.markdown("##### Pet")
 pet_type = st.radio(
     "Pet",
@@ -430,12 +520,9 @@ else:
         max_value=100,
         value=0,
         step=1,
-        help=(
-            "Level 50 = 12.5% effect. Level 100 = 25% effect."
-        ),
+        help="Level 50 = 12.5% effect. Level 100 = 25% effect.",
     )
 
-# --- Summary caption ---
 b_type, b_value = BEDROCK_TALISMANS[bedrock_choice]
 if b_type == "flat":
     bedrock_str = f"+{b_value:,} flat"
@@ -457,7 +544,19 @@ st.caption(
 )
 
 # ----------------------------------------------------------------------
-# 4. RESULTS
+# 6. Fastest mobs for tracked drops
+# ----------------------------------------------------------------------
+(
+    best_mob_for_drop,
+    best_drops_100h,
+    best_rate_detail,
+) = find_best_mobs_for_tracked_drops(
+    weapon_damage, bedrock_choice, t3_pct, t5_pct, autumn,
+    attack_speed, pet_type, pet_level
+)
+
+# ----------------------------------------------------------------------
+# 7. RESULTS
 # ----------------------------------------------------------------------
 st.divider()
 
@@ -465,7 +564,8 @@ st.header("T3 Mobs")
 for mob_name, mob_data in T3_MOBS.items():
     render_mob(
         mob_name, mob_data, 3, weapon_damage, bedrock_choice,
-        t3_pct, t5_pct, autumn, attack_speed, pet_type, pet_level
+        t3_pct, t5_pct, autumn, attack_speed, pet_type, pet_level,
+        best_mob_for_drop,
     )
     st.write("")
 
@@ -475,7 +575,8 @@ st.header("T4 Mobs")
 for mob_name, mob_data in T4_MOBS.items():
     render_mob(
         mob_name, mob_data, 4, weapon_damage, bedrock_choice,
-        t3_pct, t5_pct, autumn, attack_speed, pet_type, pet_level
+        t3_pct, t5_pct, autumn, attack_speed, pet_type, pet_level,
+        best_mob_for_drop,
     )
     st.write("")
 
@@ -489,6 +590,47 @@ st.caption(
 for mob_name, mob_data in T5_MOBS.items():
     render_mob(
         mob_name, mob_data, 5, weapon_damage, bedrock_choice,
-        t3_pct, t5_pct, autumn, attack_speed, pet_type, pet_level
+        t3_pct, t5_pct, autumn, attack_speed, pet_type, pet_level,
+        best_mob_for_drop,
     )
     st.write("")
+
+# ----------------------------------------------------------------------
+# 8. FASTEST MOBS FOR TRACKED DROPS
+# ----------------------------------------------------------------------
+st.divider()
+st.subheader("Fastest Mobs for Tracked Drops")
+st.caption(
+    "The mob with the highest output per 100 hours for each tracked item, "
+    "given your current setup."
+)
+
+summary_rows = []
+for drop in TRACKED_DROPS:
+    mob = best_mob_for_drop.get(drop)
+    if mob is None:
+        continue
+    summary_rows.append(
+        {
+            "Drop": drop,
+            "Best Mob": mob,
+            "Rate": best_rate_detail[drop],
+            "Drops in 100h": best_drops_100h[drop],
+        }
+    )
+
+summary_df = pd.DataFrame(summary_rows)
+
+st.dataframe(
+    summary_df,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "Drop": st.column_config.TextColumn("Drop", width="small"),
+        "Best Mob": st.column_config.TextColumn("Best Mob", width="medium"),
+        "Rate": st.column_config.TextColumn("Rate", width="medium"),
+        "Drops in 100h": st.column_config.NumberColumn(
+            "Drops in 100h", format="%,.2f"
+        ),
+    },
+)
