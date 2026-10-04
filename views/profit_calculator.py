@@ -209,7 +209,7 @@ def build_fragment_detail_rows(
                 TARGET_STACK_TOTAL / total_rate if total_rate > 0 else 0
             )
             rows.append({
-                "Drop": f"🐦 {drop_name}",
+                "Drop": f"Raven: {drop_name}",
                 "Value / Drop": None,
                 "Drops / Hour": bonus_rate,
                 "Drops / Day": bonus_rate * 24,
@@ -271,7 +271,7 @@ t4_price_T = st.number_input(
     help="Price of a stack of Tier 4 Potion, in trillions.",
 )
 
-st.markdown("##### 🍑 Andromeda Squash")
+st.markdown("##### Andromeda Squash")
 squash_on = st.toggle(
     "Use Andromeda Squash",
     value=False,
@@ -287,7 +287,7 @@ if squash_on:
 else:
     squash_price_T = 0.0
 
-st.markdown("##### 🐦 Raven Pet")
+st.markdown("##### Raven Pet")
 raven_on = st.toggle(
     "Own Raven",
     value=False,
@@ -310,6 +310,36 @@ fragment_details_on = st.toggle(
          "including per-hour/per-day rates, time to gather 640, and "
          "(if Raven is on) the bonus from Raven duplication.",
 )
+
+st.markdown("##### Ore Group Filters")
+st.caption(
+    "Toggle off any ore group you're not interested in. Filtered ores "
+    "are hidden from every results table below."
+)
+f1, f2, f3 = st.columns(3)
+with f1:
+    show_moon = st.toggle(
+        "Show Moon Ores", value=True,
+        help="Basalt and Brecca.",
+    )
+with f2:
+    show_mars = st.toggle(
+        "Show Mars Ores", value=True,
+        help="Regolith, Amber Rock and Amber Crystal.",
+    )
+with f3:
+    show_sun = st.toggle(
+        "Show Sun Ores", value=True,
+        help="Crimson Plasma and Cosmic Fiber.",
+    )
+
+enabled_haste_types = set()
+if show_moon:
+    enabled_haste_types.add("Moon")
+if show_mars:
+    enabled_haste_types.add("Mars")
+if show_sun:
+    enabled_haste_types.add("Sun")
 
 st.markdown("##### Drop Prices (per 64-stack, in T)")
 st.caption(
@@ -374,10 +404,20 @@ raven_mult = (1 + raven_level / 100) if raven_on else 1.0
 
 all_rows = []
 best_tier_summary = []
+best_row_per_ore = []
+
+any_ore_visible = False
 
 for ore_name, base_price in ORE_DATA.items():
-    refinery = int(refinery_by_ore.get(ore_name, 0))
     haste_type = ORE_HASTE_TYPE[ore_name]
+
+    # Skip ores whose group is filtered out.
+    if haste_type not in enabled_haste_types:
+        continue
+
+    any_ore_visible = True
+
+    refinery = int(refinery_by_ore.get(ore_name, 0))
     haste_level = haste_by_type[haste_type]
     break_time = ORE_BREAK_SPEED[ore_name][haste_level]
 
@@ -431,7 +471,7 @@ for ore_name, base_price in ORE_DATA.items():
 
         ore_rows.append({
             "Ore": ore_name,
-            "Potion": f"🍑 Squash + {best['name']}",
+            "Potion": f"Squash + {best['name']}",
             "Fortune Multiplier": f"{best['mult']}x",
             "Revenue / Hour": sq_rev_h / TRILLION,
             "Profit / Hour": sq_prof_h / TRILLION,
@@ -445,7 +485,7 @@ for ore_name, base_price in ORE_DATA.items():
 
     ore_rows.append({
         "Ore": ore_name,
-        "Potion": "📦 Fragments",
+        "Potion": "Fragments",
         "Fortune Multiplier": "—",
         "Revenue / Hour": frag_base / TRILLION,
         "Profit / Hour": frag_base / TRILLION,
@@ -459,7 +499,7 @@ for ore_name, base_price in ORE_DATA.items():
         )
         ore_rows.append({
             "Ore": ore_name,
-            "Potion": "📦 Fragments (Squash)",
+            "Potion": "Fragments (Squash)",
             "Fortune Multiplier": "—",
             "Revenue / Hour": frag_base_sq / TRILLION,
             "Profit / Hour": frag_base_sq / TRILLION,
@@ -470,7 +510,7 @@ for ore_name, base_price in ORE_DATA.items():
     if raven_on:
         ore_rows.append({
             "Ore": ore_name,
-            "Potion": "🐦 Bonus Fragments",
+            "Potion": "Bonus Fragments",
             "Fortune Multiplier": "—",
             "Revenue / Hour": frag_raven / TRILLION,
             "Profit / Hour": frag_raven / TRILLION,
@@ -480,13 +520,15 @@ for ore_name, base_price in ORE_DATA.items():
         if squash_on:
             ore_rows.append({
                 "Ore": ore_name,
-                "Potion": "🐦 Bonus (Squash)",
+                "Potion": "Bonus (Squash)",
                 "Fortune Multiplier": "—",
                 "Revenue / Hour": frag_raven_sq / TRILLION,
                 "Profit / Hour": frag_raven_sq / TRILLION,
                 "Revenue / Day": frag_raven_sq * 24 / TRILLION,
                 "Profit / Day": frag_raven_sq * 24 / TRILLION,
             })
+
+    best_row = max(ore_rows, key=lambda r: r["Profit / Hour"])
 
     st.markdown(
         f"### {ore_name} "
@@ -501,7 +543,7 @@ for ore_name, base_price in ORE_DATA.items():
     all_rows.extend(ore_rows)
 
     display_df = ore_df.drop(columns=["Ore"]).reset_index(drop=True)
-    styled_df = highlight_best_row(display_df, best["name"])
+    styled_df = highlight_best_row(display_df, best_row["Potion"])
 
     st.dataframe(
         styled_df,
@@ -526,6 +568,13 @@ for ore_name, base_price in ORE_DATA.items():
             ),
         },
     )
+
+    best_row_per_ore.append({
+        "Ore": ore_name,
+        "Best Row": best_row["Potion"],
+        "Profit / Hour": best_row["Profit / Hour"],
+        "Profit / Day": best_row["Profit / Day"],
+    })
 
     if fragment_details_on and ORE_DROPS.get(ore_name):
         st.markdown(
@@ -565,17 +614,17 @@ for ore_name, base_price in ORE_DATA.items():
         delta_h = (sq_prof_h - best["prof_h"]) / TRILLION
         if haste_level >= 6:
             st.caption(
-                f"🍑 **{ore_name}**: Haste is already at max (6) — "
+                f"**{ore_name}**: Haste is already at max (6) — "
                 f"Squash provides no mining benefit."
             )
         elif sq_prof_h > best["prof_h"]:
             st.caption(
-                f"✅ 🍑 **Squash is worth using for {ore_name}** "
+                f"**Squash is worth using for {ore_name}** "
                 f"(net **+{delta_h:.2f} T**/hour over {best['name']})."
             )
         else:
             st.caption(
-                f"❌ 🍑 **Squash is NOT worth using for {ore_name} alone** "
+                f"**Squash is NOT worth using for {ore_name} alone** "
                 f"(net **{delta_h:+.2f} T**/hour over {best['name']})."
             )
 
@@ -585,47 +634,58 @@ for ore_name, base_price in ORE_DATA.items():
             "Best Profit / Hour": best["prof_h"] / TRILLION,
             "Squash Profit / Hour": sq_prof_h / TRILLION,
             "Net Squash Gain / Hour": delta_h,
-            "Use Squash?": "✅ Yes" if sq_prof_h > best["prof_h"] else "❌ No",
+            "Use Squash?": "Yes" if sq_prof_h > best["prof_h"] else "No",
         })
 
+if not any_ore_visible:
+    st.warning(
+        "All ore groups are hidden. Turn on at least one of the "
+        "Ore Group Filters above to see results."
+    )
+
 
 # ----------------------------------------------------------------------
-# 8. BEST POTION TABLE
+# 8. BEST PROFIT ROW PER ORE
 # ----------------------------------------------------------------------
-st.divider()
-st.subheader("Best Potion Tier per Ore")
+if best_row_per_ore:
+    st.divider()
+    st.subheader("Best Profit Row per Ore")
+    st.caption(
+        "The single highest-profit row from each ore's table, across all "
+        "row types (potion tiers and fragments). Click any column "
+        "header to sort."
+    )
 
-full_df = pd.DataFrame(all_rows)
-potion_only = full_df[~full_df["Potion"].str.startswith(("📦", "🐦", "🍑"))]
+    best_row_df = (
+        pd.DataFrame(best_row_per_ore)
+        .sort_values("Profit / Hour", ascending=False)
+        .reset_index(drop=True)
+    )
 
-best_rows = (
-    potion_only.loc[potion_only.groupby("Ore")["Profit / Hour"].idxmax()]
-    .sort_values("Profit / Hour", ascending=False)
-    .reset_index(drop=True)
-)
-
-best_display = best_rows[["Ore", "Potion", "Profit / Hour"]].copy()
-
-st.dataframe(
-    best_display,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Ore": st.column_config.TextColumn("Ore", width="medium"),
-        "Potion": st.column_config.TextColumn("Best Potion", width="small"),
-        "Profit / Hour": st.column_config.NumberColumn(
-            "Profit / Hour", format="$ %.2f T"
-        ),
-    },
-)
-
+    st.dataframe(
+        best_row_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Ore": st.column_config.TextColumn("Ore", width="medium"),
+            "Best Row": st.column_config.TextColumn(
+                "Best Row", width="medium"
+            ),
+            "Profit / Hour": st.column_config.NumberColumn(
+                "Profit / Hour", format="$ %.2f T"
+            ),
+            "Profit / Day": st.column_config.NumberColumn(
+                "Profit / Day", format="$ %.2f T"
+            ),
+        },
+    )
 
 # ----------------------------------------------------------------------
 # 9. SQUASH SUMMARY
 # ----------------------------------------------------------------------
-if squash_on:
+if squash_on and best_tier_summary:
     st.divider()
-    st.subheader("🍑 Andromeda Squash Summary")
+    st.subheader("Andromeda Squash Summary")
     st.caption(
         "Squash grants +1 Haste to **every** planet for 1 hour. The table "
         "below considers each ore in isolation."
